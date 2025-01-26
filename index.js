@@ -61,8 +61,7 @@ exports.extractTextFromImage = functions
     }
   });
 
-
-exports.processChat = functions
+  exports.processChat = functions
   .region('us-central1')
   .runWith({
     timeoutSeconds: 300,
@@ -80,12 +79,20 @@ exports.processChat = functions
     }
 
     const userId = context.auth.uid;
-    const userMessage = data.message;
+    const { message, imageBase64, messageType = 'text' } = data;
 
-    if (!userMessage) {
+    // Validate input based on message type
+    if (messageType === 'text' && !message) {
       throw new functions.https.HttpsError(
         'invalid-argument',
-        'The function must be called with a message.'
+        'Text messages must include a message.'
+      );
+    }
+
+    if (messageType === 'image' && !imageBase64) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Image messages must include an image.'
       );
     }
 
@@ -96,7 +103,8 @@ exports.processChat = functions
 
       // Add user message
       const userMessageDoc = await messagesRef.add({
-        content: userMessage,
+        content: message || '',
+        messageType,
         isUser: true,
         timestamp: admin.firestore.Timestamp.now(),
         status: 'delivered'
@@ -120,20 +128,42 @@ exports.processChat = functions
       const messages = lastMessages.docs
         .map(doc => doc.data())
         .reverse()
-        .map(msg => ({
-          role: msg.isUser ? 'user' : 'assistant',
-          content: msg.content
-        }));
+        .map(msg => {
+          if (msg.messageType === 'image' && msg.imageBase64) {
+            // For the current message with image, include both image and text
+            return {
+              role: msg.isUser ? 'user' : 'assistant',
+              content: [
+                {
+                  type: "text",
+                  text: msg.content || "What do you see in this image?"
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/jpeg;base64,${msg.imageBase64.replace(/^data:image\/\w+;base64,/, '')}`
+                  }
+                }
+              ]
+            };
+          } else {
+            // For regular messages or past image messages (without image data)
+            return {
+              role: msg.isUser ? 'user' : 'assistant',
+              content: msg.content
+            };
+          }
+        });
 
       // Add system message for context
       messages.unshift({
         role: 'system',
-        content: 'You are Atomic, an AI chemistry teacher. You help students understand chemistry concepts. Keep your answers focused on chemistry and educational. Your responses should be clear and suitable for students.'
+        content: 'You are Atomic, an AI chemistry teacher integrated into Quimify, a mobile app founded in 2020 by Matthew S. Horne and Pablo Asenjo Navas-Parejo, two young entrepreneurs from Málaga, Spain. Quimify helps over 1 million students worldwide, primarily Spanish-speaking high school students from Spain and Latin America, understand science concepts, especially chemistry. When asked about yourself, your creators, or Quimify, you should answer with the previous context given to you and refer to their social media which are: TikTok: @quimify Instagram: @quimifyapp, @matt.hornne, @pabloasenjo3 Keep your responses concise, professional, and focused on the specific question or problem the student presents. Avoid unnecessary information to ensure your replies fit within a 500-token limit. While your primary audience is Spanish-speaking students, adjust your language and context to suit the users needs. Always aim for clarity and suitability for a high school student audience.'
       });
 
       // Get response from OpenAI
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',  
+        model: 'gpt-4o',
         messages: messages,
         temperature: 0.7,
         max_tokens: 500
