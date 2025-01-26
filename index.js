@@ -70,7 +70,6 @@ exports.extractTextFromImage = functions
   .https.onCall(async (data, context) => {
     const maxNumberOfMessages = 20;
 
-    // Ensure user is authenticated
     if (!context.auth) {
       throw new functions.https.HttpsError(
         'unauthenticated',
@@ -81,7 +80,6 @@ exports.extractTextFromImage = functions
     const userId = context.auth.uid;
     const { message, imageBase64, messageType = 'text' } = data;
 
-    // Validate input based on message type
     if (messageType === 'text' && !message) {
       throw new functions.https.HttpsError(
         'invalid-argument',
@@ -97,17 +95,17 @@ exports.extractTextFromImage = functions
     }
 
     try {
-      // Reference to user's chat collection
       const chatRef = db.collection('chatbot').doc(userId);
       const messagesRef = chatRef.collection('messages');
 
-      // Add user message
+      // Store the user message
       const userMessageDoc = await messagesRef.add({
         content: message || '',
         messageType,
         isUser: true,
         timestamp: admin.firestore.Timestamp.now(),
-        status: 'delivered'
+        status: 'delivered',
+        wasImage: messageType === 'image'
       });
 
       // Add placeholder for AI response
@@ -118,50 +116,57 @@ exports.extractTextFromImage = functions
         status: 'processing'
       });
 
-      // Get last 20 messages for context
-      const lastMessages = await messagesRef
-        .orderBy('timestamp', 'desc')
-        .limit(maxNumberOfMessages)
-        .get();
+      let messages = [];
 
-      // Format messages for OpenAI
-      const messages = lastMessages.docs
-        .map(doc => doc.data())
-        .reverse()
-        .map(msg => {
-          if (msg.messageType === 'image' && msg.imageBase64) {
-            // For the current message with image, include both image and text
-            return {
-              role: msg.isUser ? 'user' : 'assistant',
-              content: [
-                {
-                  type: "text",
-                  text: msg.content || "What do you see in this image?"
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:image/jpeg;base64,${msg.imageBase64.replace(/^data:image\/\w+;base64,/, '')}`
-                  }
+      // Handle differently based on message type
+      if (messageType === 'image') {
+        // For image messages, only use the current message
+        messages = [
+          {
+            role: 'system',
+            content: 'You are Atomic, an AI chemistry teacher integrated into Quimify...' // Your existing system message
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64.replace(/^data:image\/\w+;base64,/, '')}`
                 }
-              ]
-            };
-          } else {
-            // For regular messages or past image messages (without image data)
-            return {
-              role: msg.isUser ? 'user' : 'assistant',
-              content: msg.content
-            };
+              },
+              {
+                type: "text",
+                text: message || "What do you see in this image?"
+              }
+            ]
           }
-        });
+        ];
+      } else {
+        // For text messages, get last 20 non-image messages
+        const lastMessages = await messagesRef
+          .orderBy('timestamp', 'desc')
+          .limit(maxNumberOfMessages)
+          .get();
 
-      // Add system message for context
-      messages.unshift({
-        role: 'system',
-        content: 'You are Atomic, an AI chemistry teacher integrated into Quimify, a mobile app founded in 2020 by Matthew S. Horne and Pablo Asenjo Navas-Parejo, two young entrepreneurs from Málaga, Spain. Quimify helps over 1 million students worldwide, primarily Spanish-speaking high school students from Spain and Latin America, understand science concepts, especially chemistry. When asked about yourself, your creators, or Quimify, you should answer with the previous context given to you and refer to their social media which are: TikTok: @quimify Instagram: @quimifyapp, @matt.hornne, @pabloasenjo3 Keep your responses concise, professional, and focused on the specific question or problem the student presents. Avoid unnecessary information to ensure your replies fit within a 500-token limit. While your primary audience is Spanish-speaking students, adjust your language and context to suit the users needs. Always aim for clarity and suitability for a high school student audience.'
-      });
+        const textMessages = lastMessages.docs
+          .map(doc => doc.data())
+          .filter(msg => !msg.wasImage) // Exclude image messages
+          .reverse()
+          .map(msg => ({
+            role: msg.isUser ? 'user' : 'assistant',
+            content: msg.content
+          }));
 
-      // Get response from OpenAI
+        messages = [
+          {
+            role: 'system',
+            content: 'You are Atomic, an AI chemistry teacher integrated into Quimify...' // Your existing system message
+          },
+          ...textMessages
+        ];
+      }
+
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: messages,
@@ -171,14 +176,12 @@ exports.extractTextFromImage = functions
 
       const aiResponse = completion.choices[0]?.message?.content || 'Sorry, I could not generate a response.';
 
-      // Update AI message in Firestore
       await aiMessageDoc.update({
         content: aiResponse,
         status: 'completed',
         timestamp: admin.firestore.Timestamp.now()
       });
 
-      // Update metadata
       await chatRef.set({
         last_interaction: admin.firestore.Timestamp.now(),
         total_messages: admin.firestore.FieldValue.increment(2)
@@ -192,7 +195,6 @@ exports.extractTextFromImage = functions
     } catch (error) {
       console.error('Error processing chat:', error);
 
-      // Update AI message with error status if it exists
       if (aiMessageDoc) {
         await aiMessageDoc.update({
           status: 'error',
@@ -203,3 +205,43 @@ exports.extractTextFromImage = functions
       throw new functions.https.HttpsError('internal', error.message);
     }
   });
+exports.cleanupUserData = functions.auth.user().onDelete(async (user) => {
+    const userId = user.uid;
+    const db = admin.firestore();
+    
+    try {
+        // Delete user's chat collection
+        const chatRef = db.collection('chatbot').doc(userId);
+        
+        // First, delete all subcollections if they exist
+        const collections = await chatRef.listCollections();
+        const deletionPromises = collections.map(async (collection) => {
+            const documents = await collection.listDocuments();
+            const batch = db.batch();
+            
+            documents.forEach((doc) => {
+                batch.delete(doc);
+            });
+            
+            return batch.commit();
+        });
+        
+        // Wait for all subcollections to be deleted
+        await Promise.all(deletionPromises);
+        
+        // Then delete the main chat document
+        await chatRef.delete();
+        
+        console.log(`Successfully deleted chat data for user: ${userId}`);
+        
+        return {
+            success: true,
+            message: `All chat data deleted for user: ${userId}`
+        };
+    } catch (error) {
+        console.error(`Error deleting chat data for user ${userId}:`, error);
+        
+        // Rethrow the error to ensure it's properly logged in Firebase
+        throw new functions.https.HttpsError('internal', 'Error deleting user data', error);
+    }
+});
