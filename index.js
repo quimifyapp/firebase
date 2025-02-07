@@ -5,7 +5,11 @@ const OpenAI = require('openai');
 admin.initializeApp();
 const db = admin.firestore();
 
-const openai = new OpenAI({
+const textOpenAI = new OpenAI({
+  apiKey: functions.config().openai.key
+});
+
+const imageOpenAI = new OpenAI({
   apiKey: functions.config().openai.key
 });
 
@@ -28,7 +32,7 @@ exports.extractTextFromImage = functions
 
       const base64Image = imageBase64.replace(/^data:image\/\w+;base64,/, '');
 
-      const response = await openai.chat.completions.create({
+      const response = await imageOpenAI.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
@@ -117,9 +121,13 @@ exports.extractTextFromImage = functions
       });
 
       let messages = [];
+      let openaiInstance;
+      let modelName;
 
       // Handle differently based on message type
       if (messageType === 'image') {
+        openaiInstance = imageOpenAI;
+        modelName = 'gpt-4o';
         // For image messages, only use the current message
         messages = [
           {
@@ -143,6 +151,8 @@ exports.extractTextFromImage = functions
           }
         ];
       } else {
+        openaiInstance = textOpenAI;
+        modelName = 'gpt-4o';
         // For text messages, get last 20 non-image messages
         const lastMessages = await messagesRef
           .orderBy('timestamp', 'desc')
@@ -167,8 +177,8 @@ exports.extractTextFromImage = functions
         ];
       }
 
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',
+      const completion = await openaiInstance.chat.completions.create({
+        model: modelName,
         messages: messages,
         temperature: 0.7,
         max_tokens: 500
