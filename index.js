@@ -1,6 +1,8 @@
-const functions = require('firebase-functions');
+const functions = require('firebase-functions/v1');
 const admin = require('firebase-admin');
 const OpenAI = require('openai');
+const path = require('path');
+const fs = require('fs');
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -65,7 +67,7 @@ exports.extractTextFromImage = functions
     }
   });
 
-  exports.processChat = functions
+exports.processChat = functions
   .region('us-central1')
   .runWith({
     timeoutSeconds: 300,
@@ -215,6 +217,82 @@ exports.extractTextFromImage = functions
       throw new functions.https.HttpsError('internal', error.message);
     }
   });
+
+// Process practice mode answers and update leaderboard
+exports.processPracticeModeAnswers = functions
+  .region('us-central1')
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'The function must be called while authenticated.'
+      );
+    }
+
+    const userId = context.auth.uid;
+    const { answers, userName } = data;
+    const userDisplayName = context.auth.token.name || userName;
+
+    if (!answers || !Array.isArray(answers)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Answers must be provided as an array.'
+      );
+    }
+
+    if (!userDisplayName) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'User name must be provided either in auth token or as a parameter.'
+      );
+    }
+
+    try {
+      // Read the CSV file
+      const csvPath = path.join(__dirname, 'data', 'practice_mode_questions.csv');
+      const csvContent = fs.readFileSync(csvPath, 'utf-8');
+      
+      // Parse CSV content
+      const questions = {};
+      const rows = csvContent.split('\n').slice(1); // Skip header
+      rows.forEach(row => {
+        const [id, , , , , , solution] = row.split(',');
+        if (id && solution) {
+          questions[id] = solution.trim();
+        }
+      });
+
+      // Calculate points
+      let totalPoints = 0;
+      answers.forEach(({ id, answer }) => {
+        if (questions[id] && questions[id] === answer) {
+          totalPoints += 1000;
+        }
+      });
+
+      // Update leaderboard
+      const leaderboardRef = db.collection('leaderboard').doc(userId);
+      await db.runTransaction(async (transaction) => {
+        const doc = await transaction.get(leaderboardRef);
+        const currentPoints = doc.exists ? doc.data().points || 0 : 0;
+        
+        transaction.set(leaderboardRef, {
+          points: currentPoints + totalPoints,
+          userName: userDisplayName,
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      });
+
+      return {
+        success: true,
+        pointsEarned: totalPoints
+      };
+    } catch (error) {
+      console.error('Error processing practice mode answers:', error);
+      throw new functions.https.HttpsError('internal', 'Error processing answers', error);
+    }
+  });
+
 exports.cleanupUserData = functions.auth.user().onDelete(async (user) => {
     const userId = user.uid;
     const db = admin.firestore();
@@ -235,6 +313,10 @@ exports.cleanupUserData = functions.auth.user().onDelete(async (user) => {
             
             return batch.commit();
         });
+
+        // Delete user's leaderboard data
+        const leaderboardRef = db.collection('leaderboard').doc(userId);
+        await leaderboardRef.delete();
         
         // Wait for all subcollections to be deleted
         await Promise.all(deletionPromises);
