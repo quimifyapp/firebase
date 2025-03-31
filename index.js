@@ -233,6 +233,10 @@ exports.processPracticeModeAnswers = functions
     const { answers, userName } = data;
     const userDisplayName = context.auth.token.name || userName;
 
+    console.log('Received answers:', answers);
+    console.log('User name:', userDisplayName);
+    console.log('User ID:', userId);
+
     if (!answers || !Array.isArray(answers)) {
       throw new functions.https.HttpsError(
         'invalid-argument',
@@ -265,6 +269,7 @@ exports.processPracticeModeAnswers = functions
       // Calculate points
       let totalPoints = 0;
       answers.forEach(({ id, answer }) => {
+        console.log(`Question ID: ${id}, Answer: ${answer}, Solution: ${questions[id]}`);
         if (questions[id] && questions[id] === answer) {
           totalPoints += 1000;
         }
@@ -275,6 +280,8 @@ exports.processPracticeModeAnswers = functions
       await db.runTransaction(async (transaction) => {
         const doc = await transaction.get(leaderboardRef);
         const currentPoints = doc.exists ? doc.data().points || 0 : 0;
+        console.log('Current points:', currentPoints);
+        console.log('New points:', totalPoints);
         
         transaction.set(leaderboardRef, {
           points: currentPoints + totalPoints,
