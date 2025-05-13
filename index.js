@@ -344,3 +344,61 @@ exports.cleanupUserData = functions.auth.user().onDelete(async (user) => {
         throw new functions.https.HttpsError('internal', 'Error deleting user data', error);
     }
 });
+
+exports.translateText = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 60,
+    memory: '256MB'
+  })
+  .https.onCall(async (data, context) => {
+
+    const { text, language } = data;
+
+    if (!text || !language) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Both text and language must be provided.'
+      );
+    }
+
+    if (!['en', 'es'].includes(language)) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Language must be either "en" or "es"'
+      );
+    }
+
+    try {
+      const url = `https://translation.googleapis.com/language/translate/v2?key=${functions.config().google.translate.key}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          q: [text],
+          target: language,
+          format: 'text'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Translation request failed with status ${response.status}`);
+      }
+      
+      const result = await response.json();
+      const translatedText = result.data.translations[0].translatedText;
+
+      return {
+        success: true,
+        translatedText,
+        detectedSourceLanguage: result.data.translations[0].detectedSourceLanguage
+      };
+
+    } catch (error) {
+      console.error('Error translating text:', error);
+      throw new functions.https.HttpsError('internal', error.message);
+    }
+  });
