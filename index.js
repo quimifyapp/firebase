@@ -363,12 +363,12 @@ exports.translateText = functions
       );
     }
 
-    if (!['en', 'es'].includes(language)) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'Language must be either "en" or "es"'
-      );
-    }
+    // if (!['en', 'es'].includes(language)) {
+    //   throw new functions.https.HttpsError(
+    //     'invalid-argument',
+    //     'Language must be either "en" or "es"'
+    //   );
+    // }
 
     try {
       // Initialize the Translation client
@@ -383,13 +383,16 @@ exports.translateText = functions
         parent: `projects/${projectId}/locations/${location}`,
         contents: [text],
         mimeType: 'text/plain',
-        targetLanguageCode: language,
+        targetLanguageCode: 'en',
         // sourceLanguageCode: 'auto', // Let it auto-detect, or specify if needed
       };
 
       // Perform the translation request
       const [response] = await translate.translateText(request);
       const translation = response.translations[0];
+
+      console.log('Text to translate:', text);
+      console.log('Translation:', translation);
 
       return {
         success: true,
