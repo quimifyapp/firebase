@@ -3,6 +3,7 @@ const admin = require('firebase-admin');
 const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
+const {TranslationServiceClient} = require('@google-cloud/translate');
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -370,31 +371,30 @@ exports.translateText = functions
     }
 
     try {
-      const url = `https://translation.googleapis.com/language/translate/v2?key=${functions.config().google.translate.key}`;
+      // Initialize the Translation client
+      const translate = new TranslationServiceClient();
       
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          q: [text],
-          target: language,
-          format: 'text'
-        })
-      });
+      // Get project ID (automatically available in Firebase Functions)
+      const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+      const location = 'global';
 
-      if (!response.ok) {
-        throw new Error(`Translation request failed with status ${response.status}`);
-      }
-      
-      const result = await response.json();
-      const translatedText = result.data.translations[0].translatedText;
+      // Construct request
+      const request = {
+        parent: `projects/${projectId}/locations/${location}`,
+        contents: [text],
+        mimeType: 'text/plain',
+        targetLanguageCode: language,
+        // sourceLanguageCode: 'auto', // Let it auto-detect, or specify if needed
+      };
+
+      // Perform the translation request
+      const [response] = await translate.translateText(request);
+      const translation = response.translations[0];
 
       return {
         success: true,
-        translatedText,
-        detectedSourceLanguage: result.data.translations[0].detectedSourceLanguage
+        translatedText: translation.translatedText,
+        detectedSourceLanguage: translation.detectedLanguageCode || null
       };
 
     } catch (error) {
