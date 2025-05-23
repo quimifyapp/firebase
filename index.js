@@ -346,6 +346,7 @@ exports.cleanupUserData = functions.auth.user().onDelete(async (user) => {
     }
 });
 
+
 exports.translateText = functions
   .region('us-central1')
   .runWith({
@@ -363,36 +364,26 @@ exports.translateText = functions
       );
     }
 
-    // if (!['en', 'es'].includes(language)) {
-    //   throw new functions.https.HttpsError(
-    //     'invalid-argument',
-    //     'Language must be either "en" or "es"'
-    //   );
-    // }
-
     try {
-      // Initialize the Translation client
-      const translate = new TranslationServiceClient();
+      // Use explicit service account credentials
+      const translate = new TranslationServiceClient({
+        keyFilename: path.join(__dirname, 'translation-key.json'),
+      });
       
-      // Get project ID (automatically available in Firebase Functions)
-      const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+      const projectId = 'quimify-401009';
       const location = 'global';
 
-      // Construct request
       const request = {
         parent: `projects/${projectId}/locations/${location}`,
         contents: [text],
         mimeType: 'text/plain',
-        targetLanguageCode: 'en',
-        // sourceLanguageCode: 'auto', // Let it auto-detect, or specify if needed
+        targetLanguageCode: language,
       };
 
-      // Perform the translation request
+      console.log('Translation request:', request);
+
       const [response] = await translate.translateText(request);
       const translation = response.translations[0];
-
-      console.log('Text to translate:', text);
-      console.log('Translation:', translation);
 
       return {
         success: true,
